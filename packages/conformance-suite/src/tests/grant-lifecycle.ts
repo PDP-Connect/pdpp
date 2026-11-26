@@ -20,8 +20,10 @@
 // that), so the case polls until the ceiling rather than sleeping for a fixed
 // interval and hoping.
 
-import { errorBody, type PdppResponse, request } from "../harness/http.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { PdppResponse } from "../harness/http.ts";
+import { errorBody, request } from "../harness/http.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 
 /**
  * How long resource-server reads may keep serving a revoked grant before the

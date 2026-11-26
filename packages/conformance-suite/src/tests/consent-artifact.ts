@@ -31,7 +31,8 @@
 // reports `skip` naming the missing hook when a target has neither.
 
 import type { StagedApproval, TargetAdapter } from "../harness/adapter.ts";
-import { arrange, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { arrange, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
 const NO_STAGING_HOOK =
@@ -147,7 +148,7 @@ function statesFact(artifact: unknown, names: readonly string[]): boolean {
   });
 }
 
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T/;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T/u;
 
 /** Epoch milliseconds for an ISO 8601 string, or null when it does not parse. */
 function epochOf(text: string): number | null {

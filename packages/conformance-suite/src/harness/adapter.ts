@@ -48,7 +48,7 @@ const STEP_BODY_EXCERPT = 200;
  * credentials, only what the target answered.
  */
 export async function describeRefusedStep(step: string, response: Response): Promise<string> {
-  const text = (await response.text().catch(() => "")).replace(/\s+/g, " ").trim();
+  const text = (await response.text().catch(() => "")).replace(/\s+/gu, " ").trim();
   const excerpt = text.length > STEP_BODY_EXCERPT ? `${text.slice(0, STEP_BODY_EXCERPT)}...` : text;
   return `${step} was refused: HTTP ${response.status}${excerpt ? ` ${excerpt}` : ""}`;
 }

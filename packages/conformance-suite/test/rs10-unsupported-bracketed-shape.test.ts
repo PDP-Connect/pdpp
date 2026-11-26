@@ -11,7 +11,7 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 
-const SERVED_INSTEAD_OF_REJECTED_PATTERN = /served \(200\) instead of rejected/;
+const SERVED_INSTEAD_OF_REJECTED_PATTERN = /served \(200\) instead of rejected/u;
 
 const CASE_ID = "RS-10/unsupported-bracketed-shape-rejected";
 const maybeCase = RESOURCE_SERVER_CASES.find((c) => c.caseId === CASE_ID);

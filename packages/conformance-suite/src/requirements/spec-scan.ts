@@ -9,21 +9,21 @@
 // neighbours) and reports every sentence carrying an uppercase keyword. The
 // scan knows nothing about the matrix: the completeness test compares the two.
 
-const SECTION_HEADING = /^## (?:(\d+)\.|Appendix ([A-Z])\b)/;
-const SUBSECTION_HEADING = /^#{3,6} (.+?)(?: \{#[^}]+\})?$/;
-const LIST_ITEM = /^\s*(?:[-*]|\d+\.)\s+/;
-const QUOTE_MARKER = /^\s*>\s?/;
-const TABLE_CELL_BREAK = /(?<!\\)\|/;
-const SENTENCE_BREAK = /(?<=[.!?])\s+(?=[A-Z`"'([])/;
-const MUST_FAMILY = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/;
-const MUST_KEYWORD_GLOBAL = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/g;
-const SHOULD_FAMILY = /\b(?:SHOULD NOT|SHOULD|RECOMMENDED|NOT RECOMMENDED)\b/;
-const BOLD = /\*\*/g;
-const WHITESPACE = /\s+/g;
-const ESCAPED_PIPE = /\\\|/g;
+const SECTION_HEADING = /^## (?:(?<number>\d+)\.|Appendix (?<appendix>[A-Z])\b)/u;
+const SUBSECTION_HEADING = /^#{3,6} (?<heading>.+?)(?: \{#[^}]+\})?$/u;
+const LIST_ITEM = /^\s*(?:[-*]|\d+\.)\s+/u;
+const QUOTE_MARKER = /^\s*>\s?/u;
+const TABLE_CELL_BREAK = /(?<!\\)\|/u;
+const SENTENCE_BREAK = /(?<=[.!?])\s+(?=[A-Z`"'([])/u;
+const MUST_FAMILY = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/u;
+const MUST_KEYWORD_GLOBAL = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/gu;
+const SHOULD_FAMILY = /\b(?:SHOULD NOT|SHOULD|RECOMMENDED|NOT RECOMMENDED)\b/u;
+const BOLD = /\*\*/gu;
+const WHITESPACE = /\s+/gu;
+const ESCAPED_PIPE = /\\\|/gu;
 /** A leading "Label:" such as a bold list-item label; stripped when matching a sentence to a clause. */
-const LEADING_LABEL = /^[A-Z][A-Za-z0-9 \-/]{0,40}: (?=[A-Z])/;
-const WORD_BREAK = / (?=\S)/g;
+const LEADING_LABEL = /^[A-Z][A-Za-z0-9 \-/]{0,40}: (?=[A-Z])/u;
+const WORD_BREAK = / (?=\S)/gu;
 const MIN_TAIL_QUOTE = 20;
 const MAX_LOCATOR_WIDTH = 8;
 
@@ -125,10 +125,10 @@ function collectUnits(specLines: readonly string[]): readonly Unit[] {
       inFence = !inFence;
     } else if (kind === "section") {
       const heading = SECTION_HEADING.exec(raw);
-      section = heading?.[1] ?? heading?.[2] ?? "";
+      section = heading?.groups?.number ?? heading?.groups?.appendix ?? "";
       subsection = "";
     } else if (kind === "subsection") {
-      subsection = SUBSECTION_HEADING.exec(raw)?.[1] ?? "";
+      subsection = SUBSECTION_HEADING.exec(raw)?.groups?.heading ?? "";
     } else if (kind === "row") {
       push([{ line, text: raw }], false);
     }

@@ -74,17 +74,17 @@ case with an injected-defect proof in `oracle-discrimination.test.ts`. The
 implementation fixes are PDP-Connect/data-connect PR #450 (rows 1, 6, 7, 8, 9;
 merged) and PR #454 (rows 2-5; open).
 
-| # | Divergence | Case IDs | What the case asserts |
-| --- | --- | --- | --- |
-| 1 | A sparse `fields=` read mangled tombstones | `RS-7/tombstone-envelope-survives-sparse-fields` | After one deletion, the same resume token read with `fields=id` and with `fields=<non-key field>` still yields `{object, id, stream, deleted: true, deleted_at, emitted_at}` and no `data`. |
-| 2 | `limit` applied per instance, then concatenated | `RS-1/list-page-size-bounded-by-limit-across-instances` | With a grant listing two instances of one stream, no page exceeds `limit` (100 and 30), and walking every page returns each record exactly once. |
-| 3 | Multi-instance records not in `(cursor_field, primary_key)` order | `RS-1/list-sort-order-across-instances` | The walk (`order=asc`) matches the order computed from the adapter's own records: interleaved instances, equal cursors broken by key, absent cursors last. |
-| 4 | `has_more: true` with no `next_cursor` on multi-instance reads | `RS-1/list-has-more-carries-next-cursor-across-instances` | Every page with `has_more: true` carries a `next_cursor`, and following them returns all records. |
-| 5 | `changes_since` rejected on a multi-instance `mutable_state` grant | `RS-7/changes-since-accepted-on-multi-instance-grant` | The request is accepted (200) and the terminal page carries `next_changes_since`. |
-| 6 | Owner sparse read dropped schema-required fields | `RS-1/owner-sparse-fields-keep-required-fields` | An owner read with `fields=<non-required field>` still includes each schema-required field the record carries. Client tokens are not tested here. |
-| 7 | Malformed `limit` coerced instead of rejected | `RS-10/malformed-limit-rejected` | `limit=abc`, `-1`, `1.5` and `1junk` each return 400. The over-max clamp case is unchanged; `limit=0` is not asserted. |
-| 8 | Ungranted stream answered 401 | `RS-6/ungranted-stream-error-classification` (existing, unchanged) | A valid client token on a stream outside its grant gets 403 `grant_stream_not_allowed`. |
-| 9 | 401 for a rejected token lacked `error="invalid_token"` | `RS-16/401-carries-resource-metadata-challenge` (existing; new defect row) | A 401 for a presented, rejected token carries `WWW-Authenticate: Bearer` with `error="invalid_token"` and `resource_metadata`. A request with no token is only required to be 401. |
+| #   | Divergence                                                         | Case IDs                                                                   | What the case asserts                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | A sparse `fields=` read mangled tombstones                         | `RS-7/tombstone-envelope-survives-sparse-fields`                           | After one deletion, the same resume token read with `fields=id` and with `fields=<non-key field>` still yields `{object, id, stream, deleted: true, deleted_at, emitted_at}` and no `data`. |
+| 2   | `limit` applied per instance, then concatenated                    | `RS-1/list-page-size-bounded-by-limit-across-instances`                    | With a grant listing two instances of one stream, no page exceeds `limit` (100 and 30), and walking every page returns each record exactly once.                                            |
+| 3   | Multi-instance records not in `(cursor_field, primary_key)` order  | `RS-1/list-sort-order-across-instances`                                    | The walk (`order=asc`) matches the order computed from the adapter's own records: interleaved instances, equal cursors broken by key, absent cursors last.                                  |
+| 4   | `has_more: true` with no `next_cursor` on multi-instance reads     | `RS-1/list-has-more-carries-next-cursor-across-instances`                  | Every page with `has_more: true` carries a `next_cursor`, and following them returns all records.                                                                                           |
+| 5   | `changes_since` rejected on a multi-instance `mutable_state` grant | `RS-7/changes-since-accepted-on-multi-instance-grant`                      | The request is accepted (200) and the terminal page carries `next_changes_since`.                                                                                                           |
+| 6   | Owner sparse read dropped schema-required fields                   | `RS-1/owner-sparse-fields-keep-required-fields`                            | An owner read with `fields=<non-required field>` still includes each schema-required field the record carries. Client tokens are not tested here.                                           |
+| 7   | Malformed `limit` coerced instead of rejected                      | `RS-10/malformed-limit-rejected`                                           | `limit=abc`, `-1`, `1.5` and `1junk` each return 400. The over-max clamp case is unchanged; `limit=0` is not asserted.                                                                      |
+| 8   | Ungranted stream answered 401                                      | `RS-6/ungranted-stream-error-classification` (existing, unchanged)         | A valid client token on a stream outside its grant gets 403 `grant_stream_not_allowed`.                                                                                                     |
+| 9   | 401 for a rejected token lacked `error="invalid_token"`            | `RS-16/401-carries-resource-metadata-challenge` (existing; new defect row) | A 401 for a presented, rejected token carries `WWW-Authenticate: Bearer` with `error="invalid_token"` and `resource_metadata`. A request with no token is only required to be 401.          |
 
 Rows 2-5 need a grant that lists two instance handles for one stream. A target
 supplies it through the optional `issueMultiInstanceGrant` adapter hook
@@ -106,14 +106,14 @@ non-conformant, on a clause the specification never made binding — and a reade
 has no easy way to check the citation. A root review caught the suite doing
 exactly that; `test/report-honesty.test.ts` now locks the distinction.
 
-| Outcome | Meaning |
-| --- | --- |
-| `pass` | The target demonstrated the required behaviour. |
-| `fail` | The target violated a MUST-level requirement. Always carries captured evidence. |
-| `advisory` | Every MUST the case checks was met, but a SHOULD-level recommendation the case also observed was not. Counted as passing for conformance; surfaced separately so the observation is not lost. |
-| `unsupported` | The target declares the optional capability absent, so the requirement does not apply. |
-| `skip` | A precondition could not be arranged. Signals an incomplete run. |
-| `not-tested` | No case exists in this suite version. Generated from the catalogue. |
+| Outcome       | Meaning                                                                                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pass`        | The target demonstrated the required behaviour.                                                                                                                                               |
+| `fail`        | The target violated a MUST-level requirement. Always carries captured evidence.                                                                                                               |
+| `advisory`    | Every MUST the case checks was met, but a SHOULD-level recommendation the case also observed was not. Counted as passing for conformance; surfaced separately so the observation is not lost. |
+| `unsupported` | The target declares the optional capability absent, so the requirement does not apply.                                                                                                        |
+| `skip`        | A precondition could not be arranged. Signals an incomplete run.                                                                                                                              |
+| `not-tested`  | No case exists in this suite version. Generated from the catalogue.                                                                                                                           |
 
 The denominator is the catalogue, not the executed tests: a requirement with no case
 appears as `not-tested` rather than vanishing. Coverage is reported as
@@ -204,11 +204,11 @@ report records whether that held.
 Exit codes are three-valued, because a run with no failures and partial coverage is not
 a complete pass and must not be scriptable as one:
 
-| Code | Meaning |
-| --- | --- |
-| `0` | Every applicable Section 9 requirement passes AND every applicable MUST clause rolls up to `pass`. A `partial`, `skip` or `not-tested` clause blocks it; review-only clauses cannot be executed and are listed in `summary.untestableMustClauses` instead. |
-| `1` | At least one requirement failed. |
-| `2` | No failures, but coverage is incomplete. |
+| Code | Meaning                                                                                                                                                                                                                                                    |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Every applicable Section 9 requirement passes AND every applicable MUST clause rolls up to `pass`. A `partial`, `skip` or `not-tested` clause blocks it; review-only clauses cannot be executed and are listed in `summary.untestableMustClauses` instead. |
+| `1`  | At least one requirement failed.                                                                                                                                                                                                                           |
+| `2`  | No failures, but coverage is incomplete.                                                                                                                                                                                                                   |
 
 ## Coverage
 
@@ -229,7 +229,7 @@ than hidden:
   injected-response oracle test remains in the package. No bundled `TargetAdapter`
   can redeem the same authorization code twice at a live token endpoint, so a
   target without its own `replayLastCode` hook reports `skip`.
-- **Consent-surface AS requirements.** What the owner is actually *shown* — requester
+- **Consent-surface AS requirements.** What the owner is actually _shown_ — requester
   identity and client-claim attribution (AS-7), AI-training consent (AS-14), and
   declaration-snapshot retention across the whole journey (AS-16) — is not observable
   from outside. A case can see what the server bound, not what it rendered, and
@@ -248,17 +248,16 @@ Some requirements are also not black-box observable in principle. RS-9 requires
 rejection "before the RS consults declaration metadata"; the suite asserts the status
 and error code, and does not claim to test the ordering.
 
-
 ## Status against the PDP-Connect reference implementation
 
 Measured with `conformance:ri` in `test-sandbox --net none`. One run takes about
 10-15 s wall and 10 CPU-s, with a peak of about 670 MB.
 
-| data-connect commit | MUST clauses (119) | Failing cases |
-| --- | --- | --- |
-| `59a3fb480e` (pinned main) | 46 pass, 4 fail, 15 skip, 18 not-applicable, 30 untestable, 6 not-tested | `AS-16/declaration-equivocation-refused-and-prior-content-retained`, `AS-17/unsupported-version-rejected`, the three `RS-1/...-across-instances` cases, `RS-7/changes-since-accepted-on-multi-instance-grant` |
-| `661962dabe` (PR #454 head) | 48 pass, 2 fail, 15 skip, 18 not-applicable, 30 untestable, 6 not-tested | `AS-16/...`, `AS-17/...` |
-| `0c71fbeba3` (before PR #450) | not tabulated | additionally rows 1, 7, 8 and 9 of the regression table, and `RS-10/unsupported-bracketed-shape-rejected` |
+| data-connect commit           | MUST clauses (119)                                                       | Failing cases                                                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `59a3fb480e` (pinned main)    | 46 pass, 4 fail, 15 skip, 18 not-applicable, 30 untestable, 6 not-tested | `AS-16/declaration-equivocation-refused-and-prior-content-retained`, `AS-17/unsupported-version-rejected`, the three `RS-1/...-across-instances` cases, `RS-7/changes-since-accepted-on-multi-instance-grant` |
+| `661962dabe` (PR #454 head)   | 48 pass, 2 fail, 15 skip, 18 not-applicable, 30 untestable, 6 not-tested | `AS-16/...`, `AS-17/...`                                                                                                                                                                                      |
+| `0c71fbeba3` (before PR #450) | not tabulated                                                            | additionally rows 1, 7, 8 and 9 of the regression table, and `RS-10/unsupported-bracketed-shape-rejected`                                                                                                     |
 
 - `AS-16`: `POST /connectors` accepts different content under the same connector key
   and version and replaces the accepted content (Core Section 5, Declaration

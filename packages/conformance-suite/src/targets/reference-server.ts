@@ -20,7 +20,8 @@
 // path it would against a remote vendor: no in-process short circuit, no
 // privileged access to internal state.
 
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 /** Behaviours that violate a specific normative requirement, for oracle proof. */
@@ -617,7 +618,7 @@ function grantMajor(version: string): string {
   return version.split(".")[0] ?? version;
 }
 /** A `limit` is a plain non-negative integer; anything else is an unsupported query shape (clause 8.9-7). */
-const LIMIT_PATTERN = /^[0-9]+$/;
+const LIMIT_PATTERN = /^[0-9]+$/u;
 
 /** Comma-separated `fields=` value as a set of top-level field names. */
 function parseFieldsParam(raw: string | null): ReadonlySet<string> | undefined {
@@ -679,9 +680,9 @@ function parseSyncToken(raw: string): number | null {
   return Number.isInteger(version) && version >= 0 ? version : null;
 }
 
-const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
-const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
-const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
+const RECORDS_PATH = /^\/v1\/streams\/(?<stream>[^/]+)\/records$/u;
+const SINGLE_RECORD_PATH = /^\/v1\/streams\/(?<stream>[^/]+)\/records\/(?<record>[^/]+)$/u;
+const METADATA_PATH = /^\/v1\/streams\/(?<stream>[^/]+)$/u;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
 /** The client this target issues grants to, as introspection reports it. */
@@ -1280,7 +1281,7 @@ export class ReferenceServer {
           grant_id: principal.grantId,
           // Core Section 8 requires the client-token context to name both the
           // subject whose data is reachable and the client it was issued to.
-          subject_id: grant?.subjectId ?? SEEDED_SUBJECT,
+          subject_id: grant.subjectId,
           client_id: CLIENT_ID,
           ...(detail ? { authorization_details: [detail] } : {}),
         }
@@ -1555,7 +1556,9 @@ export class ReferenceServer {
     const recordsMatch = RECORDS_PATH.exec(path);
     const singleMatch = SINGLE_RECORD_PATH.exec(path);
     const metadataMatch = METADATA_PATH.exec(path);
-    const streamName = decodeURIComponent(recordsMatch?.[1] ?? singleMatch?.[1] ?? metadataMatch?.[1] ?? "");
+    const streamName = decodeURIComponent(
+      recordsMatch?.groups?.stream ?? singleMatch?.groups?.stream ?? metadataMatch?.groups?.stream ?? ""
+    );
     const fixture = this.findStream(streamName);
 
     if (!fixture) {
@@ -1593,7 +1596,7 @@ export class ReferenceServer {
         error(403, "access_denied", "permission_error", "Deletion requires an owner token.");
         return;
       }
-      const recordId = decodeURIComponent(singleMatch[2] ?? "");
+      const recordId = decodeURIComponent(singleMatch.groups?.record ?? "");
       if (this.deleteRecord(fixture.name, recordId)) {
         send(204, undefined);
         return;
@@ -1604,7 +1607,7 @@ export class ReferenceServer {
 
     // --- GET /v1/streams/{stream}/records/{id} (RS-1) ---
     if (singleMatch) {
-      const recordId = decodeURIComponent(singleMatch[2] ?? "");
+      const recordId = decodeURIComponent(singleMatch.groups?.record ?? "");
       const record = fixture.records.find((r) => r.id === recordId);
       if (!record) {
         if (this.has("serve-unknown-record-id")) {

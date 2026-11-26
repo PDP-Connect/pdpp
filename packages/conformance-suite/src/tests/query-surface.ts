@@ -16,7 +16,8 @@
 // requirement is never reported against a target that does not claim the feature.
 
 import { errorBody, request } from "../harness/http.ts";
-import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { CaseVerdict, ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { resolvedFieldAllowlist } from "./resolved-grant.ts";
 

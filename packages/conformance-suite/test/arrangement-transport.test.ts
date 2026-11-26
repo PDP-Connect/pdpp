@@ -10,22 +10,23 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-
-import { PreconditionFailed, type TargetAdapter } from "../src/harness/adapter.ts";
-import { arrange, type ConformanceCase, makeContext, pass, runCase } from "../src/harness/runner.ts";
+import type { TargetAdapter } from "../src/harness/adapter.ts";
+import { PreconditionFailed } from "../src/harness/adapter.ts";
+import type { ConformanceCase } from "../src/harness/runner.ts";
+import { arrange, makeContext, pass, runCase } from "../src/harness/runner.ts";
 import { HttpTargetAdapter } from "../src/targets/http-target.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
 
-const PATTERN_STEP_FAILED = /step failed while arranging/;
-const PATTERN_STAGED_APPROVE_FAILED_WHILE_AR = /staged\.approve failed while arranging/;
-const PATTERN_GENUINE_CONTROL_ARRANGING = /genuine-revision approval \(positive control\) failed while arranging/;
-const PATTERN_EXPLICIT_CONTROL_ARRANGING = /explicit-consent approval \(positive control\) failed while arranging/;
+const PATTERN_STEP_FAILED = /step failed while arranging/u;
+const PATTERN_STAGED_APPROVE_FAILED_WHILE_AR = /staged\.approve failed while arranging/u;
+const PATTERN_GENUINE_CONTROL_ARRANGING = /genuine-revision approval \(positive control\) failed while arranging/u;
+const PATTERN_EXPLICIT_CONTROL_ARRANGING = /explicit-consent approval \(positive control\) failed while arranging/u;
 
-const ARRANGE_SKIP = /ownerToken failed while arranging.*fetch failed/;
-const ORACLE_FAIL = /Case threw: fetch failed/;
+const ARRANGE_SKIP = /ownerToken failed while arranging.*fetch failed/u;
+const ORACLE_FAIL = /Case threw: fetch failed/u;
 const UNREACHABLE = "http://127.0.0.1:1";
 
 const CAPABILITIES = {

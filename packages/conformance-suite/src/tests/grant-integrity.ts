@@ -12,8 +12,10 @@
 // approved the narrower thing.
 
 import type { RefreshableGrant, RefreshRefusal } from "../harness/adapter.ts";
-import { type PdppResponse, request } from "../harness/http.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { PdppResponse } from "../harness/http.ts";
+import { request } from "../harness/http.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { introspectByAnyRoute } from "./authorization-server.ts";
 import { pollResourceServerRefusal, REVOCATION_TIMING } from "./grant-lifecycle.ts";

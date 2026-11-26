@@ -18,9 +18,11 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { BlobFixture, TargetAdapter } from "../harness/adapter.ts";
-import { errorBody, type PdppResponse, request, requestBytes } from "../harness/http.ts";
+import type { PdppResponse } from "../harness/http.ts";
+import { errorBody, request, requestBytes } from "../harness/http.ts";
 import { isValidMediaType } from "../harness/media-type.ts";
-import { type CaseVerdict, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import type { CaseVerdict, ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip, unsupported } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { resolvedFieldAllowlist } from "./resolved-grant.ts";
 
@@ -54,9 +56,9 @@ interface ListBody {
 // come from RFC 6750 Section 3; the `error="invalid_token"` requirement is
 // PDPP's own strengthening in Core Section 8, not something RFC 6750 mandates.
 /** A Content-Length header must be digits only, hoisted per useTopLevelRegex. */
-const DIGITS_ONLY = /^[0-9]+$/;
-const BEARER_SCHEME = /^Bearer\b/i;
-const INVALID_TOKEN_ERROR = /error="?invalid_token"?/;
+const DIGITS_ONLY = /^[0-9]+$/u;
+const BEARER_SCHEME = /^Bearer\b/iu;
+const INVALID_TOKEN_ERROR = /error="?invalid_token"?/u;
 
 function asList(json: unknown): ListBody | undefined {
   return typeof json === "object" && json !== null ? (json as ListBody) : undefined;

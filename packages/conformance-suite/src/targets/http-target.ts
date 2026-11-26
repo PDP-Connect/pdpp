@@ -30,14 +30,8 @@
 
 // biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this adapter reads operator-supplied config.
 
-import {
-  type GrantRequest,
-  type IssuedGrant,
-  PreconditionFailed,
-  type SeededStream,
-  type TargetAdapter,
-  type TargetCapabilities,
-} from "../harness/adapter.ts";
+import type { GrantRequest, IssuedGrant, SeededStream, TargetAdapter, TargetCapabilities } from "../harness/adapter.ts";
+import { PreconditionFailed } from "../harness/adapter.ts";
 import { request } from "../harness/http.ts";
 import type { Role } from "../requirements/catalog.ts";
 
@@ -85,8 +79,8 @@ function sameFieldSet(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) {
     return false;
   }
-  const left = [...a].sort();
-  const right = [...b].sort();
+  const left = [...a].sort((x, y) => x.localeCompare(y));
+  const right = [...b].sort((x, y) => x.localeCompare(y));
   return left.every((value, index) => value === right[index]);
 }
 

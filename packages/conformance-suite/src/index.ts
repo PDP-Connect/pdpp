@@ -27,7 +27,6 @@ export type {
   CaseVerdict,
   ConformanceCase,
 } from "./harness/runner.ts";
-// biome-ignore lint/performance/noBarrelFile: this file IS the package's public API surface.
 export { fail, pass, skip, unsupported } from "./harness/runner.ts";
 export { renderMarkdown } from "./report/markdown.ts";
 export type {

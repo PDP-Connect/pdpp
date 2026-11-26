@@ -11,7 +11,8 @@
 // credential (conforming) or without one (the defect).
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ALL_CASES } from "../src/suite.ts";
