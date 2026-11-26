@@ -136,12 +136,14 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `limit` | integer | Records per page. Default 25, max 100. |
 | `cursor` | string | Opaque pagination token from a previous response's `next_cursor` or `prev_cursor`. The server generates these tokens; clients pass them back verbatim. |
 | `order` | enum | `desc` (default) or `asc` |
-| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests reject exact and range forms in v0.1. |
+| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters, and client-token filters on the grant's frozen `filter_fields`. |
 | `fields` | comma-separated | Sparse fieldset. `id` is always included. Schema-required fields are always included. |
 | `expand[]` | string | Expand a foreign key relation inline (e.g., `expand[]=messages`). |
 | `expand_limit[{relation}]` | integer | Max records per expanded relation. Default 10, max 50. |
 
-**Grant enforcement:** For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. Client-token requests do not support request-time `filter[...]` in v0.1 and reject those parameters before consulting current source metadata. See Core Section 8, which is authoritative for the current query contract.
+**Grant enforcement:** For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. See Core Section 8, which is authoritative for the current query contract.
+
+**Client filters:** For client tokens, the effective filter is the frozen grant constraints intersected with the request filters. The RS evaluates client filters only under the grant's frozen `filter_fields` and never consults current source metadata for them. [Core Client request filters](spec-core.md#list-records) defines their validation and error order: under a StreamGrant without `filter_fields`, every client filter returns 400 `invalid_request` before any field check; otherwise a filter on a field outside the grant returns 403 `field_not_granted`.
 
 Note: `limit` on this API is **page size** (how many records per response). The grant constrains access through `time_range`, `fields`, and stream selection — not through record count limits. "Top 50 artists" or "recent 100 posts" are modeled as manifest-defined streams or profiles, not as grant-level constraints.
 
@@ -289,7 +291,6 @@ Every non-2xx response returns a structured error:
 | `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
-| `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed grant's `time_range`. |
 | `grant_expired` | 403 | `permission_error` | Grant has expired. |
 | `grant_revoked` | 403 | `permission_error` | Grant has been revoked. |
 | `grant_invalid` | 403 | `permission_error` | Grant references unsupported manifest version. |

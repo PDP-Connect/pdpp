@@ -80,6 +80,8 @@ export interface SelectionRequestStream {
 interface SelectionRequestBase {
   access_mode: "single_use" | "continuous";
   client_claims?: { commitments?: string[] };
+  /** Newest grant schema the client accepts; absent means "0.1.0" (Core Section 6). */
+  grant_version?: "0.1.0" | "0.2.0";
   purpose_code: string;
   purpose_description?: string;
   retention?: { max_duration: string; on_expiry: "anonymize" | "delete" };
@@ -90,8 +92,18 @@ interface SelectionRequestBase {
 export type SelectionRequest = SelectionRequestBase &
   ({ selection_preset?: never; streams: SelectionRequestStream[] } | { selection_preset: string; streams?: never });
 
+export type FilterRangeOperator = "gte" | "gt" | "lte" | "lt";
+
+/** Frozen client filter capability for one granted field (Core Section 7, `filter_fields`). */
+export interface FilterField {
+  range: FilterRangeOperator[];
+  type: "string" | "integer" | "number" | "boolean" | "date" | "date-time";
+}
+
 export interface ResolvedGrantStream {
   fields: string[];
+  /** Present only in a `0.2.0` grant. Every key is also in `fields`. */
+  filter_fields?: Record<string, FilterField>;
   instance_ids: string[];
   name: string;
   resources?: string[];
@@ -122,7 +134,7 @@ export interface ResolvedGrant {
   source_declaration: { version: string };
   streams: ResolvedGrantStream[];
   subject: { id: string };
-  version: "0.1.0";
+  version: "0.1.0" | "0.2.0";
 }
 
 const NonEmptyStringSchema = { minLength: 1, type: "string" } satisfies JsonSchema;
@@ -706,6 +718,7 @@ export function validateSourceDeclarationSemantics(
 export interface SourceAuthorizationSemanticFailure {
   code:
     | "source.grant.duplicate_stream_name"
+    | "source.grant.filter_field_not_granted"
     | "source.grant.invalid_time_constraint"
     | "source.selection.duplicate_stream_name"
     | "source.selection.invalid_time_range"
@@ -778,6 +791,16 @@ export function validateResolvedGrantSemantics(grant: ResolvedGrant): SourceAuth
         reference: stream.name,
       });
     }
+    const granted = new Set(stream.fields);
+    for (const field of Object.keys(stream.filter_fields ?? {})) {
+      if (!granted.has(field)) {
+        failures.push({
+          code: "source.grant.filter_field_not_granted",
+          path: `/streams/${index}/filter_fields/${field.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+          reference: field,
+        });
+      }
+    }
   }
   return failures.length === 0 ? { ok: true } : { failures, ok: false };
 }
@@ -835,6 +858,7 @@ export const SelectionRequestSchema = {
       },
       type: "object",
     },
+    grant_version: { enum: ["0.1.0", "0.2.0"], type: "string" },
     purpose_code: { format: "uri", minLength: 1, type: "string" },
     purpose_description: NonEmptyStringSchema,
     retention: RetentionSchema,
@@ -855,10 +879,35 @@ const TimeConstraintSchema = {
   type: "object",
 } satisfies JsonSchema;
 
+const FilterFieldSchema = {
+  additionalProperties: false,
+  properties: {
+    range: {
+      items: { enum: ["gte", "gt", "lte", "lt"], type: "string" },
+      type: "array",
+      uniqueItems: true,
+    },
+    type: { enum: ["string", "integer", "number", "boolean", "date", "date-time"], type: "string" },
+  },
+  required: ["type", "range"],
+  type: "object",
+  // Range operators are frozen only for ordered types.
+  anyOf: [
+    { properties: { type: { enum: ["integer", "number", "date", "date-time"] } } },
+    { properties: { range: { maxItems: 0 } } },
+  ],
+} satisfies JsonSchema;
+
 const ResolvedGrantStreamSchema = {
   additionalProperties: false,
   properties: {
     fields: NonEmptyUniqueStringsSchema,
+    filter_fields: {
+      additionalProperties: FilterFieldSchema,
+      minProperties: 1,
+      propertyNames: { minLength: 1 },
+      type: "object",
+    },
     instance_ids: NonEmptyUniqueStringsSchema,
     name: { minLength: 1, not: { const: "*" }, type: "string" },
     resources: NonEmptyUniqueStringsSchema,
@@ -912,8 +961,13 @@ export const ResolvedGrantSchema = {
       required: ["id"],
       type: "object",
     },
-    version: { const: "0.1.0", type: "string" },
+    version: { enum: ["0.1.0", "0.2.0"], type: "string" },
   },
+  // Only a 0.2.0 grant may carry filter_fields (Core Section 7, Grant fields).
+  anyOf: [
+    { properties: { version: { const: "0.2.0" } } },
+    { properties: { streams: { items: { not: { required: ["filter_fields"] } } } } },
+  ],
   required: [
     "version",
     "grant_id",

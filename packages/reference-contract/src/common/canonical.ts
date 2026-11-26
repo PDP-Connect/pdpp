@@ -340,7 +340,7 @@ export const FilterParamSchema: JsonSchema = {
     ],
   },
   description:
-    "Per-field filter map. Exact: `filter[field]=value`. Operator: `filter[field][op]=value`. Allowed operators per field come from `/v1/schema` `field_capabilities`.",
+    "Per-field filter map. Exact: `filter[field]=value`. Operator: `filter[field][op]=value`. Allowed operators per field come from `/v1/schema` `field_capabilities` for an owner token, and from the grant's frozen `filter_fields` for a client token.",
   type: "object",
 };
 

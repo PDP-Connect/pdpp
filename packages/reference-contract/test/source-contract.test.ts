@@ -370,6 +370,9 @@ test("selection requests keep convenience forms request-only and never imply fan
   assertInvalid(validate, { ...base, streams: [{ instance_ids: ["account-a", "account-a"], name: "issues" }] });
   assertValid(validate, { ...base, streams: [{ instance_ids: ["account-a"], name: "*" }] });
   assertInvalid(validate, { ...base, purpose_code: "research", streams: [{ name: "issues" }] });
+  assertValid(validate, { ...base, grant_version: "0.2.0", streams: [{ name: "issues" }] });
+  assertValid(validate, { ...base, grant_version: "0.1.0", selection_preset: "issues-basic" });
+  assertInvalid(validate, { ...base, grant_version: "0.3.0", streams: [{ name: "issues" }] });
   assertInvalid(validate, {
     ...base,
     client_claims: { asserted_by_server: true },
@@ -458,7 +461,8 @@ test("resolved grants require explicit frozen stream authorization facts", () =>
   assertInvalid(validate, { ...grant, streams: [{ ...grant.streams[0], name: "*" }] });
   assertInvalid(validate, { ...grant, streams: [{ ...grant.streams[0], time_constraint: { field: "updated_at" } }] });
   assertInvalid(validate, { ...grant, streams: [{ name: "issues" }] });
-  assertInvalid(validate, { ...grant, version: "0.2.0" });
+  assertValid(validate, { ...grant, version: "0.2.0" });
+  assertInvalid(validate, { ...grant, version: "0.3.0" });
 
   const duplicateGrant = validateResolvedGrantSemantics({
     ...grant,
@@ -485,4 +489,59 @@ test("resolved grants require explicit frozen stream authorization facts", () =>
   assert.ok(
     !reversedGrant.ok && reversedGrant.failures.some(({ code }) => code === "source.grant.invalid_time_constraint")
   );
+});
+
+test("resolved grants freeze client filter capability only in a 0.2.0 grant", () => {
+  const validate = compile(ResolvedGrantSchema);
+  const stream = {
+    fields: ["id", "state", "updated_at"],
+    filter_fields: {
+      id: { range: [], type: "string" },
+      updated_at: { range: ["gte", "lt"], type: "date-time" },
+    },
+    instance_ids: ["account-a"],
+    name: "issues",
+  };
+  const grant = {
+    access_mode: "continuous",
+    client: { client_id: "app-1" },
+    grant_id: "grant-1",
+    issued_at: "2026-08-10T12:00:00Z",
+    purpose_code: "https://pdpp.dev/purpose/research",
+    source,
+    source_declaration: { version: "release:opaque-v7" },
+    streams: [stream],
+    subject: { id: "owner-1" },
+    version: "0.2.0",
+  };
+  const withEntry = (entry: unknown) => ({
+    ...grant,
+    streams: [{ ...stream, filter_fields: { ...stream.filter_fields, updated_at: entry } }],
+  });
+  assertValid(validate, grant);
+  // A 0.1.0 grant that carries filter_fields is malformed.
+  assertInvalid(validate, { ...grant, version: "0.1.0" });
+  // A 0.1.0 grant without filter_fields stays valid.
+  assertValid(validate, { ...grant, streams: [{ ...stream, filter_fields: undefined }], version: "0.1.0" });
+  assertInvalid(validate, { ...grant, streams: [{ ...stream, filter_fields: {} }] });
+  assertInvalid(validate, withEntry({ range: ["gte"], type: "date-time", extra: true }));
+  assertInvalid(validate, withEntry({ type: "date-time" }));
+  assertInvalid(validate, withEntry({ range: ["gte", "gte"], type: "date-time" }));
+  assertInvalid(validate, withEntry({ range: ["between"], type: "date-time" }));
+  assertInvalid(validate, withEntry({ range: [], type: "object" }));
+  assertInvalid(validate, withEntry({ range: ["gte"], type: "string" }));
+  assertInvalid(validate, withEntry({ range: ["lt"], type: "boolean" }));
+
+  const ungranted = validateResolvedGrantSemantics({
+    ...grant,
+    streams: [{ ...stream, filter_fields: { ...stream.filter_fields, body: { range: [], type: "string" } } }],
+  } as ResolvedGrant);
+  assert.equal(ungranted.ok, false);
+  assert.ok(
+    !ungranted.ok &&
+      ungranted.failures.some(
+        ({ code, reference }) => code === "source.grant.filter_field_not_granted" && reference === "body"
+      )
+  );
+  assert.equal(validateResolvedGrantSemantics(grant as ResolvedGrant).ok, true);
 });
