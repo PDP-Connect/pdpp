@@ -34,7 +34,7 @@ This is the logical content carried in the OAuth authorization request. `client_
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/sources/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -103,7 +103,7 @@ The AS validates the request against the retained source declaration, whose `top
   "issued_at": "2026-04-11T15:00:00Z",
   "subject": { "id": "sub_H7mQ2vKa" },
   "client": { "client_id": "concerts_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/spotify" },
   "source_declaration": { "version": "2.0.0" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
@@ -193,7 +193,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+      "source": { "id": "https://registry.pdpp.dev/sources/chatgpt" },
       "purpose_code": "https://pdpp.dev/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
@@ -216,7 +216,7 @@ For this example, the retained source declaration revision is 2.0.0, and the own
   "issued_at": "2026-04-11T15:10:00Z",
   "subject": { "id": "sub_N9rT4xWp" },
   "client": { "client_id": "my_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/chatgpt" },
   "source_declaration": { "version": "2.0.0" },
   "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "purpose_description": "Provide context to your personal AI agent",
@@ -414,7 +414,7 @@ A sleep analysis app receives a one-time grant with a retention declaration. The
   "issued_at": "2026-04-11T15:20:00Z",
   "subject": { "id": "sub_B6jL8sYe" },
   "client": { "client_id": "sleep_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/oura" },
   "source_declaration": { "version": "2026-04-01" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",

@@ -121,7 +121,7 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 | Term | Definition |
 |------|-----------|
 | **Grant** | An immutable consent artifact specifying what data a client may access, under what constraints. |
-| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are source-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(source.id, stream_name)`, used in cross-source references and storage. Example: `("https://registry.pdpp.dev/connectors/spotify", "top_artists")`. |
+| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are source-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(source.id, stream_name)`, used in cross-source references and storage. Example: `("https://registry.pdpp.dev/sources/spotify", "top_artists")`. |
 | **Instance** | One connected account, device, or profile of the owner at a source, for example one of two Spotify accounts. A grant names instances by opaque handles (`instance_ids`). One handle names an instance in every stream of its source. Each stored record belongs to exactly one instance. |
 | **Record** | A single data object within a stream. |
 | **Connector** | A program that collects data from a data source, used when data is collected rather than served natively. One of possibly several producers of a source's streams. Defined in the Collection Profile. |
@@ -576,7 +576,7 @@ When a record references a record in a different stream on the same resource ser
   "data": {
     "tag_id": "tag_sunset",
     "target": {
-      "source_id": "https://registry.pdpp.dev/connectors/instagram",
+      "source_id": "https://registry.pdpp.dev/sources/instagram",
       "stream": "media",
       "record_id": "media_123"
     }
@@ -590,7 +590,7 @@ At read time, in the same way that it adds `fetch_url` to a `blob_ref`, the reso
 
 ```json
 {
-  "source_id": "https://registry.pdpp.dev/connectors/instagram",
+  "source_id": "https://registry.pdpp.dev/sources/instagram",
   "stream": "media",
   "redacted": true
 }
@@ -676,7 +676,7 @@ If `genres` is absent from a record, it stays absent. `id` and `name` are return
   "protocol_version": "0.1.0",
   "source": {
     "kind": "connector",
-    "id": "https://registry.pdpp.dev/connectors/spotify"
+    "id": "https://registry.pdpp.dev/sources/spotify"
   },
   "declaration_version": "2026-08-11",
   "publisher": {
@@ -800,6 +800,8 @@ The public SourceDeclaration JSON Schema declares JSON Schema 2020-12. Each `str
 For field selection in this version, a stream's schema-required fields are the names in the root `required` array of `streams[].schema`. An absent array defines an empty set. The AS MUST reject a declaration whose root `required` array names a field not declared in the root `properties` object.
 
 Requiredness inside a nested schema, a referenced schema, a conditional, or another schema applicator does not add a field to this consent floor. A publisher MUST list a top-level field in the root `required` array if the field must be included in every disclosed record. These rules define disclosure selection, not full-record JSON Schema validation.
+
+**Note:** The example `/sources/` and `/connectors/` paths distinguish source and connector identities illustratively; implementations retain their accepted stable source URIs.
 
 `source.id` is the authorization identity. In a retained declaration or grant, `source.kind` records the provenance class that the AS accepted from its declaration authority. It is not authorization equality, a runtime type, or a Collection Profile claim, and it never selects serving or acquisition runtime.
 A connector declaration with no Collection extension remains valid Core input.
@@ -972,7 +974,7 @@ The selection fields, validation rules, and detail-specific consent rules in thi
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/sources/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -1130,7 +1132,7 @@ Each identifier has one defining specification, which states the operation the p
 ```json
 {
   "type": "https://pdpp.dev/data-access",
-  "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "id": "https://registry.pdpp.dev/sources/spotify" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Train an on-device model that ranks concerts for Concert Finder",
   "access_mode": "single_use",
@@ -1307,7 +1309,7 @@ Source declarations may define selection presets. A client can reference a prese
 ```json
 {
   "type": "https://pdpp.dev/data-access",
-  "source": { "id": "https://registry.pdpp.dev/connectors/instagram" },
+  "source": { "id": "https://registry.pdpp.dev/sources/instagram" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
   "selection_preset": "social_summary"
@@ -1339,7 +1341,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_Jq4tN8wR" },
   "client": { "client_id": "music_recommendations" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/spotify" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
@@ -1860,7 +1862,7 @@ These examples assume retained declarations whose root `required` arrays list `i
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_x7Pd2KfL" },
   "client": { "client_id": "concert_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/spotify" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
@@ -1889,7 +1891,7 @@ These examples assume retained declarations whose root `required` arrays list `i
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_R3mV9cYe" },
   "client": { "client_id": "personal_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/openai" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/chatgpt" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "access_mode": "continuous",
@@ -1920,7 +1922,7 @@ This grant permits ordinary agent-context use; it does not authorize the agent t
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_bT6nW1qZ" },
   "client": { "client_id": "sleep_analysis" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/oura" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "access_mode": "single_use",
