@@ -205,6 +205,19 @@ test("the docker method emits the neutral versioned core-browser image with a pe
   }
 });
 
+test("every generated docker run command bounds Docker logs before the image", () => {
+  for (const choices of allChoices()) {
+    const built = buildCommand("docker", choices);
+    assert.ok(built.segments);
+    const text = commandText(built.segments);
+    const flags = text.slice(0, text.indexOf(CORE_BROWSER_IMAGE));
+    assert.ok(
+      flags.includes("--log-driver json-file --log-opt max-size=10m --log-opt max-file=5"),
+      `docker command has no bounded log policy: ${text}`
+    );
+  }
+});
+
 test("the local Docker default stays private and survives terminal closure", () => {
   const built = buildCommand("docker", defaultChoices);
   assert.ok(built.segments);

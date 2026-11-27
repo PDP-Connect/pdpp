@@ -136,7 +136,7 @@ function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
   const publishedPort = choices.access === "public" ? "3000:3000" : "127.0.0.1:3000:3000";
   const segments: CommandSegment[] = [
     {
-      text: `docker run -d --name pdpp --restart unless-stopped -p ${publishedPort} \\\n  -v pdpp_data:/var/lib/pdpp \\\n`,
+      text: `docker run -d --name pdpp --restart unless-stopped \\\n  --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \\\n  -p ${publishedPort} -v pdpp_data:/var/lib/pdpp \\\n`,
     },
   ];
   if (choices.access === "public") {
