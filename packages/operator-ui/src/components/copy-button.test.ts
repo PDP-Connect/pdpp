@@ -56,3 +56,15 @@ test("CopyButton uses the supplied label and tooltip instead of the copied value
   assert.ok(markup.includes('title="Copy connection ID"'));
   assert.ok(!markup.includes("fixture-value"));
 });
+
+test("CopyButton invalidates pending clipboard results on value changes and unmount", async () => {
+  const src = await readFile(SOURCE_FILE, "utf8");
+  assert.match(
+    src,
+    /useLayoutEffect\(\(\) => \{[\s\S]*?setCopied\(false\);[\s\S]*?return \(\) => \{[\s\S]*?copyGeneration\.current \+= 1;[\s\S]*?clearTimeout\(timerRef\.current \?\? undefined\);[\s\S]*?\}, \[value\]\);/
+  );
+  assert.match(
+    src,
+    /const generation = copyGeneration\.current;[\s\S]*?await navigator\.clipboard\.writeText\(value\);\s*if \(generation !== copyGeneration\.current\) return;\s*setCopied\(true\);/
+  );
+});

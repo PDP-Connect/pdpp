@@ -9,6 +9,7 @@ import { JSDOM } from "jsdom";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { CopyMono } from "./copy-mono";
 
 interface BrowserGlobals {
   dom: JSDOM;
@@ -243,3 +244,23 @@ test("backdrop and close button dismiss the drawer", async () => {
   await settle();
   assert.equal(currentBrowser.dom.window.document.querySelector('[role="dialog"]'), null);
 });
+
+for (const fixture of ["denied", "unavailable"] as const) {
+  test(`CopyMono does not claim success when clipboard is ${fixture}`, async () => {
+    const { root, host, dom } = installBrowserGlobals();
+    let attempts = 0;
+    Object.defineProperty(dom.window.navigator, "clipboard", {
+      configurable: true,
+      value: fixture === "denied" ? { writeText: async () => {
+        attempts += 1;
+        throw new Error("synthetic clipboard denial");
+      } } : undefined,
+    });
+    await act(async () => root.render(createElement(CopyMono, { text: "fixture-id", feedbackMs: 1_000 })));
+    const button = host.querySelector("button");
+    assert.ok(button);
+    await act(async () => { button.click(); });
+    assert.equal(button.textContent, "fixture-id");
+    assert.equal(attempts, fixture === "denied" ? 1 : 0);
+  });
+}

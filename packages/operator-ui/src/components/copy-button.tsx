@@ -5,7 +5,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
 import { Check, Copy } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 interface CopyButtonProps {
   ariaLabel?: string;
@@ -25,16 +25,23 @@ export function CopyButton({ value, ariaLabel, size = "sm", className }: CopyBut
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(
-    () => () => {
+  const copyGeneration = useRef(0);
+
+  useLayoutEffect(() => {
+    setCopied(false);
+    return () => {
+      // Invalidate before a clipboard completion can acknowledge a prior value.
+      copyGeneration.current += 1;
       clearTimeout(timerRef.current ?? undefined);
-    },
-    []
-  );
+      timerRef.current = null;
+    };
+  }, [value]);
 
   const onClick = useCallback(async () => {
+    const generation = copyGeneration.current;
     try {
       await navigator.clipboard.writeText(value);
+      if (generation !== copyGeneration.current) return;
       setCopied(true);
       clearTimeout(timerRef.current ?? undefined);
       timerRef.current = setTimeout(() => setCopied(false), RESET_MS);

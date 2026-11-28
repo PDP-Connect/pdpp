@@ -114,3 +114,101 @@ test("malformed pages report the first invalid field in envelope order", () => {
     kind: "invalid", reason: "expected has_more to be a boolean, got null",
   });
 });
+
+test("non-object responses are rejected without throwing", () => {
+  for (const response of ["list", 5, true, []]) {
+    assert.deepEqual(validateListEnvelope(response as never), {
+      kind: "invalid",
+      reason: 'expected object: "list", got undefined',
+    });
+  }
+});
+
+test("a page with no object field at all is rejected (exact discriminator)", () => {
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: false } as never), {
+    kind: "invalid",
+    reason: 'expected object: "list", got undefined',
+  });
+});
+
+test("the discriminator is case-sensitive (\"List\" is not \"list\")", () => {
+  assert.equal(
+    validateListEnvelope({ data: [], has_more: false, object: "List" }).kind,
+    "invalid",
+  );
+});
+
+test("a terminal page with a non-string next_cursor is valid and returns no continuation", () => {
+  const result = validateListEnvelope({ data: [], has_more: false, next_cursor: 123, object: "list" });
+  assert.deepEqual(result, { data: [], hasMore: false, kind: "valid", nextCursor: undefined });
+});
+
+test("unknown extra fields on a page are ignored", () => {
+  const result = validateListEnvelope({ data: [], has_more: false, object: "list", extra: 1 } as never);
+  assert.equal(result.kind, "valid");
+});
+
+test("continuation failures name the exact reason callers surface", () => {
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: true, object: "list" }), {
+    kind: "invalid",
+    reason: "has_more is true but next_cursor is missing, non-string, or blank after trimming",
+  });
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: true, next_cursor: "   ", object: "list" }), {
+    kind: "invalid",
+    reason: "has_more is true but next_cursor is missing, non-string, or blank after trimming",
+  });
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: false, next_cursor: "still-here", object: "list" }), {
+    kind: "invalid",
+    reason: "has_more is false but next_cursor carries a non-blank continuation (terminal page contradiction)",
+  });
+});
+
+test("a non-boolean has_more names the offending value in the reason", () => {
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: "true" as unknown as boolean, object: "list" }), {
+    kind: "invalid",
+    reason: 'expected has_more to be a boolean, got "true"',
+  });
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: 1 as unknown as boolean, object: "list" }), {
+    kind: "invalid",
+    reason: "expected has_more to be a boolean, got 1",
+  });
+});
+
+test("check order: cursor coherence is judged only after object, data, and has_more all pass", () => {
+  // A wrong object beats a missing cursor.
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: true, object: "wrong" }), {
+    kind: "invalid",
+    reason: 'expected object: "list", got "wrong"',
+  });
+  // Non-array data beats a missing cursor.
+  assert.deepEqual(validateListEnvelope({ data: "nope", has_more: true, object: "list" }), {
+    kind: "invalid",
+    reason: "expected data to be an array",
+  });
+  // A non-boolean has_more beats any cursor reasoning.
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: "yes" as unknown as boolean, next_cursor: "x", object: "list" }), {
+    kind: "invalid",
+    reason: 'expected has_more to be a boolean, got "yes"',
+  });
+});
+
+test("terminal-page contradiction judges the cursor after trimming, and an empty cursor is absent", () => {
+  // Non-blank after trimming, even with surrounding whitespace: contradiction.
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: false, next_cursor: "  still-here  ", object: "list" }), {
+    kind: "invalid",
+    reason: "has_more is false but next_cursor carries a non-blank continuation (terminal page contradiction)",
+  });
+  // An empty-string cursor is absent, the same as a whitespace-only one.
+  assert.deepEqual(validateListEnvelope({ data: [], has_more: false, next_cursor: "", object: "list" }), {
+    data: [], hasMore: false, kind: "valid", nextCursor: undefined,
+  });
+});
+
+test("a long opaque cursor with encoded characters round-trips byte-for-byte", () => {
+  const cursor = `eyJ2IjoxLCJvZmZzZXQiOjEyMzQ1fQ==/abc+def/ghi?cursor=${"x".repeat(200)}`;
+  const result = validateListEnvelope({ data: [], has_more: true, next_cursor: cursor, object: "list" });
+  assert.equal(result.kind, "valid");
+  if (result.kind === "valid") {
+    assert.equal(result.nextCursor, cursor);
+  }
+});

@@ -63,3 +63,20 @@ test("DataRowMeta renders an explicit numeric zero rather than a blank value", (
 
   assert.equal(html, '<span class="pdpp-data-row__meta">0</span>');
 });
+
+test("Monogram tint is opt-in and stable across case and outside spacing", () => {
+  const plain = renderToStaticMarkup(createElement(Monogram, { name: "Sample Name" }));
+  const first = renderToStaticMarkup(createElement(Monogram, { name: "Sample Name", tinted: true }));
+  const normalized = renderToStaticMarkup(createElement(Monogram, { name: "  SAMPLE NAME  ", tinted: true }));
+  assert.doesNotMatch(plain, /pdpp-monogram--tinted|--pdpp-monogram-hue/);
+  assert.match(first, /pdpp-monogram--tinted/);
+  assert.match(first, /--pdpp-monogram-hue:\d+/);
+  assert.equal(first, normalized);
+});
+
+test("DataRowWho preserves an added class and renders identifier punctuation as text", () => {
+  const html = renderToStaticMarkup(createElement(DataRowWho, { title: "App & data", id: "sample:<id>", className: "external" }));
+  assert.match(html, /class="pdpp-data-row__who external"/);
+  assert.match(html, />App &amp; data<\/span>/);
+  assert.match(html, />sample:&lt;id&gt;<\/span>/);
+});

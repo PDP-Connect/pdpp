@@ -88,6 +88,31 @@ test("builds a role-backed event preview with a UTC time label", () => {
   );
 });
 
+test("a zoneless declared event time renders as UTC, not host local time", () => {
+  // Date.parse reads a zoneless ISO datetime as host local time while
+  // TIME_FMT pins UTC, so the same declared event-time rendered differently
+  // on SSR and client hosts. A zoneless value must render as UTC.
+  // The defect only shows on a non-UTC host, so pin one for this case.
+  const hostZone = process.env.TZ;
+  process.env.TZ = "America/Chicago";
+  try {
+    const preview = buildRecordPreview(
+      "event",
+      { notes: "Room 1", starts_at: "2026-05-22T18:00:00", title: "Launch" },
+      null,
+      { notes: "secondary", starts_at: "event-time", title: "primary-title" }
+    );
+
+    assert.equal(preview?.eventTime, "6:00 PM");
+  } finally {
+    if (hostZone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = hostZone;
+    }
+  }
+});
+
 test("an event-kind record with a declared-but-EMPTY primary-title renders a placeholder, not the id", () => {
   // A codex/messages-shaped record: content (primary-title) is blank, but the
   // event-time role keeps it kind=event. It must show "(no content)" — not fall
