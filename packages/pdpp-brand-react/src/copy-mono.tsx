@@ -32,15 +32,13 @@ export function CopyMono({ text, copyValue, className, feedbackMs = DEFAULT_FEED
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const onCopy = useCallback(() => {
-    const value = copyValue ?? text;
-    // navigator.clipboard is unavailable in insecure contexts / older runtimes;
-    // fail quietly rather than throwing — the id still reads on screen.
-    const write = navigator.clipboard?.writeText(value);
-    if (write) {
-      write.catch(() => {
-        /* clipboard denied — leave the value visible */
-      });
+  const onCopy = useCallback(async () => {
+    const clipboard = navigator.clipboard;
+    if (!clipboard?.writeText) return;
+    try {
+      await clipboard.writeText(copyValue ?? text);
+    } catch {
+      return; // The identifier stays visible; no success feedback on refusal.
     }
     setCopied(true);
     // `clearTimeout(undefined)` is a spec no-op, so the first click needs no guard.
