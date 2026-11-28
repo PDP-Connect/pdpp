@@ -25,6 +25,9 @@ export const DEFAULT_RECENT_HISTORY_DAYS = 30;
 
 function daysBefore(nowIso: string, days: number): string {
   const nowMs = Date.parse(nowIso);
+  if (!Number.isFinite(nowMs)) {
+    throw new RangeError(`Invalid now clock value: ${JSON.stringify(nowIso)}`);
+  }
   return new Date(nowMs - days * 86_400_000).toISOString();
 }
 

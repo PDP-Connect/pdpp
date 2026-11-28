@@ -28,6 +28,10 @@ test("a non-positive explicit day count falls back to the default rather than pr
   assert.deepEqual(scope, { since: "2026-07-10T00:00:00.000Z" });
 });
 
+test("recent history names an invalid injected now clock", () => {
+  assert.throws(() => resolveNamedCollectionScope({ kind: "recent" }, "not-a-date"), /\bnow\b.*not-a-date/u);
+});
+
 test("all history resolves to null (unscoped), not an empty object", () => {
   assert.equal(resolveNamedCollectionScope({ kind: "all" }, NOW), null);
   assert.equal(collectionScopeFingerprint(resolveNamedCollectionScope({ kind: "all" }, NOW)), "unscoped");
