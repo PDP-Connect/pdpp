@@ -199,17 +199,26 @@ export async function runCase(conformanceCase: ConformanceCase, rawContext: Case
     assertion: conformanceCase.assertion,
   };
 
-  if (conformanceCase.appliesWhen && !conformanceCase.appliesWhen(context.adapter, context.streams)) {
-    return {
-      ...base,
-      outcome: "unsupported",
-      detail: "The target does not declare the capability this requirement is conditional on.",
-      durationMs: Date.now() - startedAt,
-    };
-  }
-
   let verdict: CaseVerdict;
   try {
+    let applies: boolean;
+    try {
+      applies = conformanceCase.appliesWhen?.(context.adapter, context.streams) ?? true;
+    } catch (error) {
+      throw new PreconditionFailed(
+        `appliesWhen failed while arranging the case: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
+    }
+    if (!applies) {
+      return {
+        ...base,
+        outcome: "unsupported",
+        detail: "The target does not declare the capability this requirement is conditional on.",
+        durationMs: Date.now() - startedAt,
+      };
+    }
+
     verdict = await conformanceCase.run(context);
   } catch (error) {
     // A step that could not arrange the case's precondition is missing evidence,

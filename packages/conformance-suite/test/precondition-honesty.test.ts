@@ -17,7 +17,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 
 import type { SeededStream } from "../src/harness/adapter.ts";
-import { makeContext, runCase } from "../src/harness/runner.ts";
+import { makeContext, pass, runCase, runCases } from "../src/harness/runner.ts";
 import { ReferenceAsAdapter } from "../src/targets/reference-as-adapter.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
@@ -168,4 +168,36 @@ describe("harness steps that cannot arrange a precondition report skip", () => {
     assert.equal(result.outcome, "skip", `got ${result.outcome}: ${result.detail ?? ""}`);
     assert.match(result.detail ?? "", TIME_CONSTRAINT_STEP);
   });
+});
+
+it("skips a throwing appliesWhen and runs the next case", async () => {
+  const context = makeContext(stubAdapter("http://example.test"), [STREAM]);
+  const broken = {
+    caseId: "AS-8/throwing-applicability",
+    requirementId: "AS-8",
+    assertion: "An unavailable capability cannot establish applicability.",
+    appliesWhen: () => {
+      throw new Error("capability probe unavailable");
+    },
+    run: async () => assert.fail("the body must not run"),
+  };
+  const next = {
+    caseId: "AS-8/next-case",
+    requirementId: "AS-8",
+    assertion: "The suite continues after an unavailable predicate.",
+    run: async () => pass(),
+  };
+
+  const result = await runCase(broken, context);
+  assert.equal(result.caseId, broken.caseId);
+  assert.equal(result.outcome, "skip");
+  assert.match(result.detail ?? "", /appliesWhen.*capability probe unavailable/u);
+
+  const results = await runCases([broken, next], context);
+  assert.deepEqual(
+    results.map(({ caseId, outcome }) => [caseId, outcome]),
+    [[broken.caseId, "skip"], [next.caseId, "pass"]]
+  );
+  const unsupported = await runCase({ ...broken, appliesWhen: () => false }, context);
+  assert.equal(unsupported.outcome, "unsupported");
 });
