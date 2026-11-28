@@ -264,3 +264,46 @@ for (const fixture of ["denied", "unavailable"] as const) {
     assert.equal(attempts, fixture === "denied" ? 1 : 0);
   });
 }
+
+function deferredClipboard(dom: JSDOM) {
+  const writes: string[] = [];
+  let resolve!: () => void;
+  const pending = new Promise<void>((done) => { resolve = done; });
+  Object.defineProperty(dom.window.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (text: string) => { writes.push(text); return pending; } },
+  });
+  return { writes, resolve };
+}
+
+test("CopyMono does not show copied for a changed identifier after a late write", async () => {
+  const { root, host, dom } = installBrowserGlobals();
+  const clipboard = deferredClipboard(dom);
+  await act(async () => root.render(createElement(CopyMono, { text: "fixture-a" })));
+  const button = host.querySelector("button");
+  assert.ok(button);
+  await act(async () => { button.click(); });
+  await act(async () => root.render(createElement(CopyMono, { text: "fixture-b" })));
+  await act(async () => { clipboard.resolve(); });
+  assert.deepEqual(clipboard.writes, ["fixture-a"]);
+  assert.equal(button.textContent, "fixture-b");
+});
+
+test("CopyMono ignores a clipboard write that resolves after unmount", async t => {
+  const { root, host, dom } = installBrowserGlobals();
+  const clipboard = deferredClipboard(dom);
+  const feedbackMs = 1_234;
+  const timeouts = t.mock.method(globalThis, "setTimeout");
+  const consoleErrors = t.mock.method(console, "error");
+  await act(async () => root.render(createElement(CopyMono, { text: "fixture-a", feedbackMs })));
+  const button = host.querySelector("button");
+  assert.ok(button);
+  await act(async () => { button.click(); });
+  await act(async () => root.render(null));
+  await act(async () => { clipboard.resolve(); });
+  assert.deepEqual(clipboard.writes, ["fixture-a"]);
+  assert.equal(host.querySelector("button"), null);
+  assert.equal(timeouts.mock.calls.filter(call => call.arguments[1] === feedbackMs).length, 0,
+    "a stale completion must not schedule state feedback");
+  assert.equal(consoleErrors.mock.callCount(), 0);
+});

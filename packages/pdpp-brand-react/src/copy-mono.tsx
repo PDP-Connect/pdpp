@@ -13,7 +13,7 @@
  */
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import "./components.css";
 
 interface CopyMonoProps {
@@ -31,20 +31,32 @@ const DEFAULT_FEEDBACK_MS = 1200;
 export function CopyMono({ text, copyValue, className, feedbackMs = DEFAULT_FEEDBACK_MS }: CopyMonoProps) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const generation = useRef(0);
+  const value = copyValue ?? text;
+
+  useLayoutEffect(() => {
+    setCopied(false);
+    return () => {
+      generation.current += 1;
+      clearTimeout(timer.current);
+      timer.current = undefined;
+    };
+  }, [text, value]);
 
   const onCopy = useCallback(async () => {
     const clipboard = navigator.clipboard;
     if (!clipboard?.writeText) return;
+    const started = generation.current;
     try {
-      await clipboard.writeText(copyValue ?? text);
+      await clipboard.writeText(value);
     } catch {
       return; // The identifier stays visible; no success feedback on refusal.
     }
+    if (started !== generation.current) return;
     setCopied(true);
-    // `clearTimeout(undefined)` is a spec no-op, so the first click needs no guard.
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), feedbackMs);
-  }, [copyValue, text, feedbackMs]);
+  }, [value, feedbackMs]);
 
   return (
     <button className={["rr-copyid", className].filter(Boolean).join(" ")} onClick={onCopy} title="Copy" type="button">
