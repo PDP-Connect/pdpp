@@ -165,6 +165,12 @@ test("buildParRequest lifts flat data-access inputs into authorization_details",
   );
 });
 
+test("buildParRequest defaults a blank detail type without dropping the detail", () => {
+  assert.deepEqual(buildParRequest({ purpose_code: "fixture", type: "" }), {
+    authorization_details: [{ type: "https://pdpp.dev/data-access", purpose_code: "fixture" }],
+  });
+});
+
 test("buildParRequest rejects legacy source scalar inputs", () => {
   const legacyInput: Record<string, unknown> = {
     connector_id: "spotify",
